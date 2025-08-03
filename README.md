@@ -86,9 +86,7 @@ Companies and developers use LangGraph for:
   - Uses `LangGraph` to route and process the request
   - Returns clean responses only (not full LLM dump)
 
-#### 🌐 Live App:
 
-👉 [Launch Gradio App](https://6229a31cab51d81276.gradio.live)
 
 ---
 
