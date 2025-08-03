@@ -1,4 +1,4 @@
-import gradio as gr 
+import gradio as gr
 from typing import TypedDict, List, Union
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
@@ -12,9 +12,9 @@ from chromadb.config import Settings
 import torch
 from transformers import pipeline
 from langchain_core.messages import AIMessage
-
 import re
-
+from huggingface_hub import login
+from transformers import pipeline
 load_dotenv()
 
 # ---------------------------- Agent State ----------------------------
@@ -22,7 +22,8 @@ class AgentState(TypedDict):
     chat: List[Union[HumanMessage, AIMessage]]
     chat_state: str
 
-# -------------------------- Embeddings & DB --------------------------
+
+login()
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 def embedding_process(text: str):
@@ -86,16 +87,19 @@ def run_local_llm(prompt: str) -> str:
     return tokenizer.decode(output[0], skip_special_tokens=True).strip()
 
 
-
 def router_node(state: AgentState) -> AgentState:
     return state
+
+
+
+
 
 def smart_routing(state: dict) -> str:
     # Initialize the zero-shot classification pipeline
     classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
 
     # Extract the user input from the agent state
-    user_input = state["chat"][-1].content  
+    user_input = state["chat"][-1].content
 
     # Define possible task labels
     candidate_labels = ["generate_code", "explain_code"]
@@ -126,7 +130,7 @@ Solution:
 
     generated_output = run_local_llm(final_prompt)
 
-    
+    # Extract only the last solution block (ignore all other examples)
     matches = re.findall(r"Solution:\s*\n?(def .*?)(?=\n#{2,}|$)", generated_output, re.DOTALL)
 
     if matches:
@@ -165,22 +169,21 @@ Explain the following Python code clearly and concisely.
 
 
 #creating the graph 
+graph = StateGraph(AgentState)
 
-graph = StateGraph(AgentState)  
 
+graph.add_node("router", router_node)
+graph.add_node("generate_code", generate_code_node)
+graph.add_node("explain_code", explain_code_node)
 
-graph.add_node("router", router_node)  
-graph.add_node("generate_code", generate_code_node) 
-graph.add_node("explain_code", explain_code_node) 
-
-graph.set_entry_point("router")  
+graph.set_entry_point("router")
 
 
 
 
 graph.add_conditional_edges(
     "router",
-    smart_routing,  
+    smart_routing,
     {
         "generate_code": "generate_code",
         "explain_code": "explain_code"
@@ -190,42 +193,70 @@ graph.add_conditional_edges(
 graph.add_edge("generate_code", END)
 graph.add_edge("explain_code", END)
 
+
+
 compiled_graph = graph.compile()
 
 
 
 
+import gradio as gr
+from langchain_core.messages import HumanMessage, AIMessage
+from traceback import format_exc
 
+# ---------------------- Session State ----------------------
+session_state = {"chat": [], "chat_state": ""}
 
+# ---------------------- Chatbot Function ----------------------
+def chatbot(user_input: str, history: list):
+    try:
+        
+        # Copy previous session state
+        state = {
+            "chat": session_state["chat"][:],
+            "chat_state": session_state["chat_state"]
+        }
 
+        # Add new user message
+        state["chat"].append(HumanMessage(content=user_input))
 
+        # Run LangGraph stream
+        event_stream = compiled_graph.stream(state)  # compiled_graph must be defined
 
-def chatbot(user_input: str):
-    # Initialize agent state
-    state = {"chat": [], "chat_state": ""}
-    
-    # Append user input as a HumanMessage
-    state["chat"].append(HumanMessage(content=user_input))
-    
-    # Run the graph stream
-    event_stream = compiled_graph.stream(state)
+        for event in event_stream:
+            if isinstance(event, dict) and "state" in event:
+                state = event["state"]
 
-    # Update state from streamed events
-    for event in event_stream:
-        if isinstance(event, dict) and "state" in event:
-            state = event["state"]
+        # Save session
+        session_state["chat"] = state["chat"]
+        session_state["chat_state"] = state["chat_state"]
 
-    # Extract only the last AI response
-    if state["chat"] and isinstance(state["chat"][-1], AIMessage):
-        return state["chat"][-1].content.strip()
-    else:
-        return "🤖 No response generated."
+        # Return latest AI response
+        if state["chat"] and isinstance(state["chat"][-1], AIMessage):
+            return state["chat"][-1].content.strip()
+        else:
+            return " No response generated."
 
+    except Exception:
+        return f" Error:\n{format_exc()}"
 
+# ---------------------- Gradio Interface ----------------------
+import gradio as gr
+from gradio.themes.base import Base
 
-   
+# Define a purple-colored theme
+purple_theme = Base(
+    primary_hue="purple", 
+    neutral_hue="gray"
+)
 
+# Define the chatbot interface with custom theme
+demo = gr.ChatInterface(
+    fn=chatbot,
+    title="💜 Chatbot",
+    description="Chat with a LangGraph-powered assistant.",
+    theme=purple_theme
+)
 
-
-demo = gr.Interface(fn=chatbot, inputs="text", outputs="text")
+# Launch the app
 demo.launch()
